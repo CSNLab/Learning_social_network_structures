@@ -1,0 +1,349 @@
+---
+title: "Network Learning 2"
+author: "Miriam Weaverdyck"
+date: "3/21/2020"
+output: html_document
+---
+
+## Setup
+
+```{r load packages, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE)
+library(dplyr)
+library(tidyr)
+library(network)
+library(rjson)
+library(ggplot2)
+library(plyr)
+library(Rmisc)
+library(igraph)
+
+```
+
+
+```{r variable setup, echo=F}
+
+# set variables
+structures <- c('natural', 'unnatural')
+subs_to_exclude<-c(0, 994, 995, 996, 997, 998, 30, 33, 44, 71, 118, 202, 229, 230, 142, 42)
+n_sect <- 2
+cols <- c("#8c96c6","#88419d")
+
+# directories
+project_dir <- "~/CSNLGoogleDrive/network-learning2/"
+analyze_dir <- paste0(project_dir,'analyze/')
+ego_dir <- paste0(project_dir,'ego-network-task/')
+learn_dir <- paste0(project_dir,'learning-task/data/')
+draw_dir <- paste0(project_dir,"drawing-task/")
+fig_dir <- paste0(analyze_dir, 'figures/')
+
+```
+
+### Read in data
+True network structures
+```{r, echo=F}
+true_els <- read.csv(paste0(analyze_dir, "network_edges.csv"))
+true_els[,c('node1', 'node2')] <- true_els[,c('node1', 'node2')] + 1
+all_edges <- as.data.frame(t(combn(9,2)))
+names(all_edges) <- c("node1","node2")
+```
+
+```{r, echo=F}
+par(mfrow=c(1,2))
+plot.network(as.network(true_els[true_els$Structure=='natural',c('node1','node2')], directed=F, matrix.type = "edgelist"),
+             displaylabels=T,
+             main="natural")
+plot.network(as.network(true_els[true_els$Structure=='unnatural',c('node1','node2')], directed=F, matrix.type = "edgelist"),
+             displaylabels=T,
+             main="unnatural")
+par(mfrow=c(1,1))
+```
+
+
+learning task
+```{r, echo=F}
+data_learn <- data.frame()
+for (x in dir(learn_dir, "*.csv")){
+  data_learn <- rbind(data_learn, read.csv(paste0(learn_dir, x)))
+}
+data_learn <- data_learn[data_learn$Mode=="Exp",]
+sub_info <- unique(data_learn[,c("ID","Section","Condition","Structure","node1","image1","label1")])
+
+knitr::kable(head(filter(data_learn, trial_type=="test")))
+```
+
+```{r functions to determine subjects network, include=F}
+get_structure <- function(sub, sect){
+  d <- filter(sub_info, ID==sub, Section==sect)
+  o <- unique(d$Structure)
+  return(o)
+}
+
+get_section <- function(sub, struct){
+  d <- filter(sub_info, ID==sub, Structure==struct)
+  o <- unique(d$Section)
+  return(o)
+}
+
+get_condition <- function(sub){
+  d <- filter(sub_info, ID==sub)
+  o <- unique(d$Condition)
+  return(o)
+}
+
+get_image <- function(sub, node, sect=NULL, struct=NULL) {
+  if (!is.null(sect) & !is.null(struct)) {
+    print('Warning: both section and structure inputted. Using section only')
+  }
+  if (!is.null(sect)){
+    d <- filter(sub_info, ID==sub, node1==node, Section==sect)
+  } else if (!is.null(struct)){
+    d <- filter(sub_info, ID==sub, node1==node, Structure==struct)
+  } else {
+    stop('must input section or structure')
+  }
+  o <- as.character(unique(d$image1))
+  o <- tail(strsplit(o, '/')[[1]], n=1)
+  return(o)
+}
+
+get_label <- function(sub, node, sect=NULL, struct=NULL) {
+  if (!is.null(sect) & !is.null(struct)) {
+    print('Warning: both section and structure inputted. Using section only')
+  }
+  if (!is.null(sect)){
+    d <- filter(sub_info, ID==sub, node1==node, Section==sect)
+  } else if (!is.null(struct)){
+    d <- filter(sub_info, ID==sub, node1==node, Structure==struct)
+  } else {
+    stop('must input section or structure')
+  }
+  o <- as.character(unique(d$label1))
+  return(o)
+}
+```
+
+
+drawing task
+```{r read drawing data, warning=F, echo=F}
+outdir <- draw_dir
+setwd(draw_dir)
+json_list <- fromJSON(file = "network-editor-v2-export.json")
+# first level is subject id
+sub_ids <- names(json_list)
+# remove subscript to just get number ids
+subs <- as.numeric(substring(sub_ids, nchar("sub-")+1))
+# remove any that are excluded
+sub_ids <- sub_ids[!(subs %in% subs_to_exclude)]
+subs <- subs[!(subs %in% subs_to_exclude)]
+json_list <- json_list[names(json_list) %in% sub_ids]
+
+```
+
+```{r, echo=F}
+# make into dataframe
+data_draw <- data.frame()
+for (s in seq(length(json_list))){
+  d <- json_list[[s]]
+  sub <- subs[s]
+  par(mfrow=c(1,2), mar=c(0,0,2,0))
+  sect <- 1
+  for (i in seq(length(d))){
+    # remove null elements
+    if (is.null(d[[i]])){
+      json_list[[s]][[i]] <- NULL
+    } else {
+      # get structure for this section
+      net <- get_structure(sub, sect)
+      true_el <- filter(true_els, Structure==net)
+      true_el[,c('node1', 'node2')] <- true_el[,c('node1', 'node2')] - 1
+      df_sect <- data.frame()
+      # select this subject/section's data
+      d_sect <- d[[i]][[1]][['data']]
+      dur <- d[[i]][[1]][['duration']] / 1000 # in seconds
+      for (j in d_sect){
+        # node ID
+        n <- as.numeric(as.character(j[["id"]]))
+        # alter IDs
+        alters <- j[['connections']]
+        alters <- alters[alters > n]
+        if (length(alters)==0) next
+        # image name of node ID
+        img <- j[['image']]
+        # get basename
+        img <- tail(strsplit(img, '/')[[1]], n=1)
+        # initials of node ID
+        lab <- j[['label']]
+        # add to subject's dataframe
+        rs <- expand.grid(sub, sect, img, lab, n, alters, T)
+        df_sect <- rbind(df_sect, expand.grid(sub, sect, img, lab, n, alters, NA, NA, T))
+      }
+      colnames(df_sect) <- c("ID","Section","image1","label1","node1","node2","image2","label2","sub_reported")
+      df_sect$image1 <- as.character(df_sect$image1)
+      df_sect$label1 <- as.character(df_sect$label1)
+      df_sect_complete <- df_sect
+      for (n1 in seq(0,7)){
+        for (n2 in seq(n1+1,8)){
+          if (nrow(filter(df_sect, node1==n1, node2==n2)) == 0){
+            img <- get_image(sub=sub, sect=sect, node=n1)
+            lab <- get_label(sub=sub, sect=sect, node=n1)
+            img2 <- get_image(sub=sub, sect=sect, node=n2)
+            lab2 <- get_label(sub=sub, sect=sect, node=n2)
+            r <- c(sub, sect, img, lab, n1, n2, img2, lab2, F)
+            df_sect_complete <- rbind(df_sect_complete,r)
+          } else {
+            img2 <- get_image(sub=sub, sect=sect, node=n2)
+            lab2 <- get_label(sub=sub, sect=sect, node=n2)
+            df_sect_complete[df_sect_complete$node1==n1 & df_sect_complete$node2==n2, 'image2'] <- img2
+            df_sect_complete[df_sect_complete$node1==n1 & df_sect_complete$node2==n2, 'label2'] <- lab2
+          }
+        }
+      }
+      df_sect_complete$edge <- paste0(df_sect_complete$node1,'-',df_sect_complete$node2)
+      true_el$edge <- paste0(true_el$node1, '-', true_el$node2)
+      df_sect_complete$true_structure <- df_sect_complete$edge %in% true_el$edge
+      df_sect_complete$Condition <- get_condition(sub)
+      df_sect_complete$Structure <- net
+      # add amount of time spent drawing
+      df_sect_complete$rt <- dur
+      # add to data_draw
+      data_draw <- rbind(data_draw, df_sect_complete)
+      sect <- sect + 1
+    }
+  }
+}
+data_draw <- as.data.frame(data_draw)
+data_draw$node1 <- as.numeric(as.character(data_draw$node1))
+data_draw$node2 <- as.numeric(as.character(data_draw$node2))
+
+# determine which edges were correct
+data_draw$correct <- data_draw$sub_reported == data_draw$true_structure
+
+# change node indices to 1-9 if starting at 0
+if (min(data_draw$node1)==0){
+  data_draw[,c("node1","node2")] <- data_draw[,c("node1","node2")]+1
+}
+# glance at the data
+knitr::kable(head(data_draw))
+
+# check that each subject's edge list has 36 edges
+d <- ddply(data_draw, .(ID, Section, Structure), summarise,
+      n=length(Condition), complete=n==36)
+"Number of incomplete edge lists:"
+sum(!d$complete)
+
+```
+
+ego network survey  
+```{r read ego data, warning=F, echo=F}
+
+outdir <- ego_dir
+setwd(ego_dir)
+json_list <- fromJSON(file = "network-survey-v2-export.json")
+# first level is subject id
+sub_ids <- names(json_list)
+# remove subscript to just get number ids
+subs <- as.numeric(substring(sub_ids, nchar("sub-")+1))
+# remove any that are excluded
+sub_ids <- sub_ids[!(subs %in% subs_to_exclude)]
+subs <- subs[!(subs %in% subs_to_exclude)]
+json_list <- json_list[names(json_list) %in% sub_ids]
+# make into dataframe
+data_ego <- data.frame(ID=NA, degree=NA, betweenness=NA, constraint=NA,
+                       transitivity=NA, density=NA, k_core_max=NA,
+                       strength_close=NA, strength_freq=NA)
+ego_els <- data.frame()
+for (s in seq(length(json_list))){
+  d <- json_list[[s]]
+  sub <- subs[s]
+  deg <- length(d$`1 Social Network List`$data$`social-list`$response)
+  close <- as.numeric(d$`2 Norbeck Q1`$data$`social-network-closeness`$response)
+  freq <- as.numeric(d$`2 Norbeck Q1`$data$`social-network-frequency`$response)
+  el <- data.frame(ID=sub,n1=0, n2=seq(deg), in_ego=TRUE,
+                   closeness=close, frequency=freq)
+  if (deg > 1 & "3 Ego Centric Network Matrix" %in% names(d)){
+    alter_mat <- d$`3 Ego Centric Network Matrix`$data$`social-network`$response
+    for (n2 in seq(2, deg)){
+      r <- alter_mat[[n2]]
+      for (n1 in seq(length(r))){
+        if (r[n1]) {
+          el <- rbind(el, c(sub,n1,n2,TRUE, NA, NA))
+        }
+      }
+    }
+  }
+  ego_els <- rbind(ego_els, el)
+  g <- graph_from_edgelist(as.matrix(el[,c('n1','n2')]+1), directed = F)
+  bet <- betweenness(g, v=1, directed = F, normalized = T)
+  con <- constraint(g, nodes = 1)
+  trans <- transitivity(g)
+  dens <- edge_density(g)
+  k_core_max <- max(coreness(g))
+  stren_close <- sum(el$closeness, na.rm = T) # strength based on closeness ratings
+  stren_freq <- sum(el$frequency, na.rm = T) # strength based on frequency ratings
+  data_ego <- rbind(data_ego, c(sub, deg, bet, con, trans, dens, k_core_max, stren_close, stren_freq))
+}
+data_ego <- filter(data_ego, !is.na(ID))
+data_ego$ID <- as.character(data_ego$ID)
+data_ego[is.na(data_ego$transitivity),"transitivity"] <- 0
+data_ego[is.na(data_ego$betweenness),"betweenness"] <- 0
+# log tranforms
+data_ego$log_degree <- log(data_ego$degree)
+data_ego$log_constraint <- log(data_ego$constraint)
+# normalize
+data_ego$strength_close_norm <- data_ego$strength_close / data_ego$degree
+data_ego$strength_freq_norm <- data_ego$strength_freq / data_ego$degree
+
+# glance at the data
+knitr::kable(head(data_ego))
+```
+
+```{r, echo=F}
+# plot ego networks of the smallest and largest degrees
+min_deg <- min(data_ego$degree)
+max_deg <- max(data_ego$degree)
+
+# get the subject IDs related to these minimums and maximums
+min_sub <- unique(filter(data_ego, degree==min_deg)$ID)
+max_sub <- unique(filter(data_ego, degree==max_deg)$ID)
+
+# get the edge lists for these subjects
+min_el <- filter(ego_els, ID==min_sub) %>% select(n1, n2) + 1
+max_el <- filter(ego_els, ID==max_sub) %>% select(n1, n2) + 1
+
+# plot networks side by side
+par(mfrow=c(1,2))
+plot.network(as.network(min_el, directed=F),
+             displaylabels=T,
+             main=paste("Minimum Degree =", min_deg, "\nSub", min_sub))
+plot.network(as.network(max_el, directed=F),
+             displaylabels=T,
+             main=paste("Maximum Degree =", max_deg, "\nSub", max_sub))
+par(mfrow=c(1,1))
+
+```
+
+Demographics  
+```{r, extract_sub_demos, echo=F}
+demo_label <- "5 Demographics"
+# make into dataframe
+data_demo <- data.frame()
+for (s in seq(length(json_list))){ # iterate through each subject
+  sub <- subs[s]
+  # get subject demographics
+  df <- json_list[[s]][[demo_label]][["data"]]
+  df <- as.data.frame(df)
+  df$ID <- sub
+  data_demo <- rbind.fill(data_demo, df)
+}
+```
+
+
+
+```{r save_data}
+write.csv(data_draw, file=paste0(draw_dir, "network_learn2_draw_data.csv"), row.names=F)
+write.csv(data_ego, file=paste0(ego_dir, "network_learn2_ego_data.csv"), row.names = F)
+write.csv(ego_els, file=paste0(ego_dir,"network_learn2_ego_edgelists.csv"), row.names=F)
+write.csv(data_demo, file=paste0(ego_dir,"network_learn2_demographics.csv"), row.names=F)
+```

@@ -1,0 +1,684 @@
+---
+title: "Network Learning 2"
+author: "Miriam Weaverdyck"
+date: "3/21/2020"
+output: html_document
+---
+
+## Setup
+
+```{r load packages, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE)
+library(dplyr)
+library(tidyr)
+library(network)
+library(rjson)
+library(ggplot2)
+library(plyr)
+library(Rmisc)
+library(igraph)
+
+```
+
+
+```{r variable setup, echo=F}
+
+# set variables
+structures <- c('natural', 'unnatural')
+subs_to_exclude<-c(0, 994, 995, 996, 997, 998, 30, 33, 44, 71, 118, 202, 229, 230, 142, 42)
+n_sect <- 2
+cols <- c("#8c96c6","#88419d")
+
+# directories
+project_dir <- "~/CSNLGoogleDrive/network-learning2/"
+analyze_dir <- paste0(project_dir,'analyze/')
+ego_dir <- paste0(project_dir,'ego-network-task/')
+learn_dir <- paste0(project_dir,'learning-task/data/')
+draw_dir <- paste0(project_dir,"drawing-task/")
+fig_dir <- paste0(analyze_dir, 'figures/')
+
+```
+
+### Read in data
+True network structures
+```{r, echo=F}
+true_els <- read.csv(paste0(analyze_dir, "network_edges.csv"))
+true_els[,c('node1', 'node2')] <- true_els[,c('node1', 'node2')] + 1
+all_edges <- as.data.frame(t(combn(9,2)))
+names(all_edges) <- c("node1","node2")
+```
+
+```{r, echo=F}
+par(mfrow=c(1,2))
+plot.network(as.network(true_els[true_els$Structure=='natural',c('node1','node2')], directed=F, matrix.type = "edgelist"),
+             displaylabels=T,
+             main="natural")
+plot.network(as.network(true_els[true_els$Structure=='unnatural',c('node1','node2')], directed=F, matrix.type = "edgelist"),
+             displaylabels=T,
+             main="unnatural")
+par(mfrow=c(1,1))
+```
+
+```{r read data}
+# must run analyze/convert_combine_csvs.Rmd first
+data_draw <- read.csv(paste0(draw_dir, "network_learn2_draw_data.csv"))
+data_ego <- read.csv(paste0(ego_dir, "network_learn2_ego_data.csv"))
+ego_els <- read.csv(paste0(ego_dir,"network_learn2_ego_edgelists.csv"))
+data_demo <- read.csv(paste0(ego_dir,"network_learn2_demographics.csv"))
+```
+
+
+
+## Analyses
+```{r accuracy by network type}
+
+accuracy_draw <- ddply(data_draw, .(ID, Structure, Condition),
+                       summarise, correct=mean(correct))
+
+summ_accuracy_draw <- summarySEwithin(data = data_draw,
+                                      measurevar = "correct",
+                                      betweenvars = "Condition",
+                                      withinvars = c("Structure"),
+                                      idvar = "ID",
+                                      na.rm = T)
+```
+
+
+```{r accuracy tests}
+mylm <- lmerTest::lmer(correct ~ Structure + (1|ID),
+                       data=accuracy_draw)
+knitr::kable(anova(mylm))
+# which network structure did participants learn better?
+# - natural
+mymeans <- emmeans::emmeans(mylm, "Structure")
+knitr::kable(confint(mymeans))
+knitr::kable(pairs(mymeans))
+```
+
+
+```{r, accuracy by network type plots, echo=F}
+
+ggplot(accuracy_draw, aes(x=Structure, y=correct))+
+  geom_boxplot()+
+  geom_line(aes(group=interaction(ID)), position = position_dodge(.2),
+            color="gray", alpha=.5) +
+  geom_hline(yintercept=15/36, col="black", linetype=3)+
+  geom_hline(yintercept=21/36, col="black", linetype=3)+
+  theme(legend.position="none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black"),
+        plot.title = element_text(hjust = 0.5)) +
+  geom_point(aes(col=as.factor(ID)),
+             position = position_dodge(.2),
+             alpha = .75)
+ggsave(paste0(fig_dir,"accuracy_boxplot.png"), width=6.5/2, height=3, units="in")
+
+ggplot(summ_accuracy_draw, aes(x=Structure, y=correct))+
+        geom_bar(stat="identity", position = "dodge",
+                 aes(fill=Structure)) +
+        scale_fill_manual(limits=structures, values=rev(cols)) +
+        geom_hline(yintercept=15/36, col="black", linetype=3)+
+        geom_hline(yintercept=21/36, col="black", linetype=3)+
+        geom_line(data=accuracy_draw, aes(group=interaction(ID)),
+                  position = position_dodge(.2),
+                  color="gray", alpha=.5) +
+        geom_point(data=accuracy_draw, aes(col=as.factor(ID)),
+                   position = position_dodge(.2),
+                   alpha = .75) +
+        geom_errorbar(aes(ymin=correct-se, ymax=correct+se), width=.1)+
+        theme(legend.position="none",
+              panel.grid.major = element_blank(),
+              panel.grid.minor = element_blank(),
+              panel.background = element_blank(),
+              axis.line = element_line(colour = "black"),
+              plot.title = element_text(hjust = 0.5)) +
+        labs(x="Network Structure", y="% Accuracy") +
+        ggtitle("Accuracy")
+ggsave(paste0(fig_dir,"accuracy_barplot.png"), width=6.5/2, height=3, units="in")
+
+
+# plot circle graphs
+data_draw <- arrange(data_draw, node1, node2)
+all_edges <- as.matrix(unique(data_draw[,c("node1","node2")]))
+# create a graph including all possible edges
+g_all <- graph_from_edgelist(all_edges, directed = FALSE)
+# get average report rate
+accuracy_draw_els <- ddply(data_draw, .(Condition, Structure, node1, node2, true_structure),
+                            summarise,
+                            prop_reported=mean(as.numeric(as.logical(sub_reported))),
+                            accuracy=mean(as.numeric(correct)))
+# save which edges are in each structure
+in_network <- accuracy_draw_els[,c("node1","node2","true_structure", "Structure")]
+in_network <- spread(in_network, Structure, true_structure)
+# define general layout
+x_extreme <- -1
+v_space <- 1
+vspace <- v_space
+coords <- rbind(c(x_extreme,0),
+                c(x_extreme+v_space,1*vspace),
+                c(x_extreme+3*v_space,1.5*vspace),
+                c(x_extreme+5*v_space,1*vspace),
+                c(x_extreme+6*v_space,0),
+                c(x_extreme+5*v_space,-1*vspace),
+                c(x_extreme+3*v_space,-1.5*vspace),
+                c(x_extreme+v_space,-1*vspace),
+                c(x_extreme+3*v_space+.3,.3))
+# define layout for A and B
+g_all$margin <- c(0,0,0,0)
+orders <- cbind(c(1,2,3,5,4,7,8,9,6),c(1,2,3,5,4,7,8,9,6))
+colnames(orders) <- structures
+# Plot all cells
+mar=c(1,1,1,1)
+par(mfrow=c(1,2),mar=c(1,1,1,1))
+i=1
+for (ab in rev(structures)){
+  g_all$layout <- coords[order(orders[,ab]),]
+  E(g_all)$color <- 'gray'
+  E(g_all)[in_network[,ab]]$color <- cols[i]#'green'
+  g_true <- subgraph.edges(g_all,eids = E(g_all)[in_network[,ab]])
+  pos_edges <- accuracy_draw_els[accuracy_draw_els$Structure==ab,"prop_reported"]
+  plot(g_all, edge.width=pos_edges*10, main=paste0(ab))
+  i = i+1
+}
+dev.copy(png,paste0(fig_dir,'circle_plots.png'), width=6.5, height=3, units="in", res=300)
+dev.off()
+par(mfrow=c(1,1))
+
+```
+
+
+
+
+Check order effects  
+```{r}
+d <- ddply(data_draw, .(ID, Structure, Condition, Section),
+                       summarise, correct=mean(correct))
+summarySEwithin(data = d,
+                measurevar = "correct",
+                betweenvars = "Condition",
+                withinvars = c("Structure", "Section"),
+                idvar = "ID",
+                na.rm = T)
+
+accuracy_draw_sect <- summarySEwithin(data = data_draw,
+                                           measurevar = "correct",
+                                           betweenvars = "Condition",
+                                           withinvars = c("Structure", "Section", "ID"),
+                                           na.rm = T)
+summ_accuracy_draw_sect <- summarySEwithin(data = data_draw,
+                                      measurevar = "correct",
+                                      betweenvars = "Condition",
+                                      withinvars = c("Structure", "Section"),
+                                      idvar = "ID",
+                                      na.rm = T)
+
+mylm <- lmerTest::lmer(correct ~ Structure*Section + (1|ID),
+                       data=accuracy_draw_sect)
+knitr::kable(anova(mylm))
+# Did participants perform better in section 1 or section 2?
+# - No difference for unnatural
+# - Better in Section 2 for natural
+mymeans <- emmeans::emmeans(mylm, ~Section|Structure)
+knitr::kable(confint(mymeans))
+knitr::kable(pairs(mymeans))
+# Did participants learn the natural network better than the unnatural network in oth sections?
+# - Yes
+mymeans <- emmeans::emmeans(mylm, ~Structure|Section)
+knitr::kable(confint(mymeans))
+knitr::kable(pairs(mymeans))
+```
+
+```{r, echo=F}
+
+ggplot(summ_accuracy_draw_sect, aes(x=Section, y=correct, fill=Structure))+
+  geom_bar(stat="identity", position = "dodge") +
+  scale_fill_manual(limits=structures, values=rev(cols)) +
+  geom_errorbar(aes(ymin=correct-se, ymax=correct+se), width=.1,
+                position = position_dodge(.9))+
+  geom_hline(yintercept=15/36, col="black", linetype=3)+
+  geom_hline(yintercept=21/36, col="black", linetype=3)+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black"),
+        plot.title = element_text(hjust = 0.5)) +
+  labs(x="Section", y="% Accuracy") +
+  ggtitle("Accuracy by section")
+ggsave(paste0(fig_dir,"accuracy_bysection_barplot.png"), width=6.5/2, height=3, units="in")
+
+
+```
+
+
+
+
+
+
+###Ego Network Effects
+```{r}
+# combine drawing data and ego network meaures
+data_egodraw <- left_join(accuracy_draw, data_ego)
+
+knitr::kable(head(data_egodraw))
+```
+
+
+####Degree
+Natural structure only  
+Disappears when constraint added as a covariate
+```{r}
+data_egodraw$zdegree <- scale(data_egodraw$degree, center=T, scale = T)
+
+
+mylm <- lmerTest::lmer(correct ~ Structure*degree + (1|ID),
+                       data=data_egodraw)
+knitr::kable(anova(mylm))
+knitr::kable(emmeans::emtrends(mylm, "Structure", var="degree"))
+
+
+mylm <- lmerTest::lmer(correct ~ Structure*log_degree + (1|ID),
+                       data=data_egodraw)
+knitr::kable(anova(mylm))
+knitr::kable(emmeans::emtrends(mylm, "Structure", var="log_degree"))
+
+
+mylm <- lmerTest::lmer(correct ~ Structure*zdegree + (1|ID),
+                       data=data_egodraw)
+knitr::kable(anova(mylm))
+knitr::kable(emmeans::emtrends(mylm, "Structure", var="zdegree"))
+
+
+"With constraint as a covariate:"
+mylm <- lmerTest::lmer(correct ~ Structure*degree + log_constraint + (1|ID),
+                       data=data_egodraw)
+knitr::kable(anova(mylm))
+knitr::kable(emmeans::emtrends(mylm, "Structure", var="degree"))
+
+```
+
+```{r, echo=F}
+ggplot(data_egodraw, aes(x=degree, y=correct*100, color=Structure,
+                         group=Structure, shape=Structure)) +
+  facet_grid(~Condition) +
+  geom_point(position = position_jitter(height=.01)) +
+  stat_smooth(method = "lm", se = T, size=1, aes(linetype=Structure),
+              show.legend = T)+
+  scale_linetype(limits = structures,
+                 labels = c("p < 0.05", "n.s."), name = "Significance") +
+  labs(title="Degree Effects on Accuracy",
+       x="Degree", y="% Accuracy",
+       color="Network\nStructure", shape="Network\nStructure")+
+       scale_color_manual(values=cols)
+
+ggsave(paste0(fig_dir,"accuracyperc_by_degree.png"),
+       width=6.5, height=5, units="in")
+
+
+ggplot(data_egodraw, aes(x=log_degree, y=correct*100, color=Structure,
+                         group=Structure, shape=Structure)) +
+  facet_grid(~Condition) +
+  geom_point() +
+  stat_smooth(method = "lm", se = T, size=1, aes(linetype=Structure),
+              show.legend = T)+
+  scale_linetype(limits = structures,
+                 labels = c("p < 0.05", "n.s."), name = "Significance") +
+  labs(title="Degree Effects on Accuracy",
+       x="log(Degree)", y="% Accuracy",
+       color="Network\nStructure", shape="Network\nStructure")+
+       scale_color_manual(values=cols)
+
+
+ggplot(data_egodraw, aes(x=zdegree, y=correct*100, color=Structure,
+                         group=Structure, shape=Structure)) +
+  facet_grid(~Condition) +
+  geom_point() +
+  stat_smooth(method = "lm", se = T, size=1, aes(linetype=Structure),
+              show.legend = T)+
+  scale_linetype(limits = structures,
+                 labels = c("p < 0.05", "n.s."), name = "Significance") +
+  labs(title="Degree Effects on Accuracy",
+       x="Degree (z-score)", y="% Accuracy",
+       color="Network\nStructure", shape="Network\nStructure")+
+       scale_color_manual(values=cols)
+```
+
+
+####Strength
+#####Non-normalized
+```{r}
+
+mylm <- lmerTest::lmer(correct ~ Structure*strength_close + (1|ID),
+                       data=data_egodraw)
+knitr::kable(anova(mylm))
+knitr::kable(emmeans::emtrends(mylm, "Structure", var="strength_close"))
+
+
+mylm <- lmerTest::lmer(correct ~ Structure*strength_freq + (1|ID),
+                       data=data_egodraw)
+knitr::kable(anova(mylm))
+knitr::kable(emmeans::emtrends(mylm, "Structure", var="strength_freq"))
+
+```
+
+```{r, echo=F}
+ggplot(data_egodraw, aes(x=strength_close, y=correct*100, color=Structure,
+                         group=Structure, shape=Structure)) +
+  facet_grid(~Condition) +
+  geom_point() +
+  stat_smooth(method = "lm", se = T, size=1, aes(linetype=Structure),
+              show.legend = T)+
+  scale_linetype(limits = structures,
+                 labels = c("p < 0.05", "n.s."), name = "Significance") +
+  labs(title="Strength Effects on Accuracy",
+       x="Strength\n(Closeness)", y="% Accuracy",
+       color="Network\nStructure", shape="Network\nStructure")+
+       scale_color_manual(values=cols)
+
+
+
+ggplot(data_egodraw, aes(x=strength_freq, y=correct*100, color=Structure,
+                         group=Structure, shape=Structure)) +
+  facet_grid(~Condition) +
+  geom_point() +
+  stat_smooth(method = "lm", se = T, size=1, aes(linetype=Structure),
+              show.legend = T)+
+  scale_linetype(limits = structures,
+                 labels = c("p < 0.05", "n.s."), name = "Significance") +
+  labs(title="Strength Effects on Accuracy",
+       x="Strength\n(Frequency)", y="% Accuracy",
+       color="Network\nStructure", shape="Network\nStructure")+
+       scale_color_manual(values=cols)
+
+
+```
+
+#####Normalized
+No effect
+```{r}
+
+mylm <- lmerTest::lmer(correct ~ Structure*strength_close_norm + (1|ID),
+                       data=data_egodraw)
+knitr::kable(anova(mylm))
+knitr::kable(emmeans::emtrends(mylm, "Structure", var="strength_close_norm"))
+
+
+mylm <- lmerTest::lmer(correct ~ Structure*strength_freq_norm + (1|ID),
+                       data=data_egodraw)
+knitr::kable(anova(mylm))
+knitr::kable(emmeans::emtrends(mylm, "Structure", var="strength_freq_norm"))
+
+
+# overall strength
+data_egodraw$strength <- data_egodraw$strength_close_norm + data_egodraw$strength_freq_norm
+
+mylm <- lmerTest::lmer(correct ~ Structure*strength + (1|ID),
+                       data=data_egodraw)
+knitr::kable(anova(mylm))
+knitr::kable(emmeans::emtrends(mylm, "Structure", var="strength"))
+```
+
+```{r, echo=F}
+ggplot(data_egodraw, aes(x=strength_close_norm, y=correct*100, color=Structure,
+                         group=Structure, shape=Structure)) +
+  facet_grid(~Condition) +
+  geom_point() +
+  stat_smooth(method = "lm", se = T, size=1, linetype=2,
+              show.legend = T) +
+  labs(title="Strength Effects on Accuracy",
+       x="Strength\n(Closeness)", y="% Accuracy",
+       color="Normalized Network\nStructure", shape="Network\nStructure")+
+       scale_color_manual(values=cols)
+
+
+
+ggplot(data_egodraw, aes(x=strength_freq_norm, y=correct*100, color=Structure,
+                         group=Structure, shape=Structure)) +
+  facet_grid(~Condition) +
+  geom_point() +
+  stat_smooth(method = "lm", se = T, size=1, linetype=2,
+              show.legend = T)+
+  labs(title="Normalized Strength Effects on Accuracy",
+       x="Strength\n(Frequency)", y="% Accuracy",
+       color="Network\nStructure", shape="Network\nStructure")+
+       scale_color_manual(values=cols)
+
+
+ggplot(data_egodraw, aes(x=strength, y=correct*100, color=Structure,
+                         group=Structure, shape=Structure)) +
+  facet_grid(~Condition) +
+  geom_point() +
+  stat_smooth(method = "lm", se = T, size=1, linetype=2,
+              show.legend = T) +
+  labs(title="Normalized Strength Effects on Accuracy",
+       x="Strength\n(Closeness + Frequency)", y="% Accuracy",
+       color="Network\nStructure", shape="Network\nStructure")+
+       scale_color_manual(values=cols)
+ggsave(paste0(fig_dir,"accuracyperc_by_strength.png"),
+       width=6.5, height=5, units="in")
+```
+
+
+####Constraint
+Natural structure only  
+No effect when degree included as covariate
+```{r}
+
+mylm <- lmerTest::lmer(correct ~ Structure*log_constraint + (1|ID),
+                       data=data_egodraw)
+knitr::kable(anova(mylm))
+knitr::kable(emmeans::emtrends(mylm, "Structure", var="log_constraint"))
+
+"With Degree as a covariate:"
+mylm <- lmerTest::lmer(correct ~ Structure*log_constraint + degree + (1|ID),
+                       data=data_egodraw)
+knitr::kable(anova(mylm))
+knitr::kable(emmeans::emtrends(mylm, "Structure", var="log_constraint"))
+
+```
+
+```{r, echo=F}
+ggplot(data_egodraw, aes(x=log_constraint, y=correct*100, color=Structure,
+                         group=Structure, shape=Structure)) +
+  facet_grid(~Condition) +
+  geom_point() +
+  stat_smooth(method = "lm", se = T, size=1, aes(linetype=Structure),
+              show.legend = T)+
+  scale_linetype(limits = structures,
+                 labels = c("p < 0.05", "n.s."), name = "Significance") +
+  labs(title="Brokerage Effects on Accuracy",
+       x="Inverse Brokerage\n(Log Constraint)", y="% Accuracy",
+       color="Network\nStructure", shape="Network\nStructure")+
+       scale_color_manual(values=cols)
+
+ggsave(paste0(fig_dir,"accuracyperc_by_constraint.png"),
+       width=6.5, height=5, units="in")
+```
+
+
+####Betweenness
+No effect  
+```{r}
+mylm <- lmerTest::lmer(correct ~ Structure*betweenness + (1|ID),
+                       data=data_egodraw)
+knitr::kable(anova(mylm))
+knitr::kable(emmeans::emtrends(mylm, "Structure", var="betweenness"))
+
+```
+
+```{r, echo=F}
+ggplot(data_egodraw, aes(x=betweenness, y=correct*100, color=Structure,
+                         group=Structure, shape=Structure)) +
+  facet_grid(~Condition) +
+  geom_point() +
+  stat_smooth(method = "lm", se = T, size=1, linetype=2,
+              show.legend = T)+
+  labs(title="Brokerage Effects on Accuracy",
+       x="Brokerage\n(Betweenness)", y="% Accuracy",
+       color="Network\nStructure", shape="Network\nStructure")+
+       scale_color_manual(values=cols)
+
+ggsave(paste0(fig_dir,"accuracyperc_by_betweenness.png"),
+       width=6.5, height=5, units="in")
+```
+
+####Transitivity
+No effect  
+```{r}
+mylm <- lmerTest::lmer(correct ~ Structure*transitivity + (1|ID),
+                       data=data_egodraw)
+knitr::kable(anova(mylm))
+knitr::kable(emmeans::emtrends(mylm, "Structure", var="transitivity"))
+
+```
+
+```{r, echo=F}
+ggplot(data_egodraw, aes(x=transitivity, y=correct*100, color=Structure,
+                         group=Structure, shape=Structure)) +
+  facet_grid(~Condition) +
+  geom_point() +
+  stat_smooth(method = "lm", se = T, size=1, linetype=2, show.legend = T)+
+  #theme(legend.position="none") +
+  labs(title="Transitivity Effects on Accuracy",
+       x="Transitivity", y="% Accuracy",
+       color="Network\nStructure", shape="Network\nStructure")+
+       scale_color_manual(values=cols)
+
+ggsave(paste0(fig_dir,"accuracyperc_by_transitivity.png"),
+       width=6.5, height=5, units="in")
+```
+
+Degree, strength, and constraint are highly correlated, and thus redundant.
+As such, it is unclear which is responsible for learning accuracy.
+```{r}
+c <- colnames(data_ego)
+knitr::kable(cor(select(data_ego, c[c!="ID"])))
+
+cor.test(data_ego$degree, data_ego$log_constraint)
+
+```
+
+
+## Homophily
+People are more accurate when images are of the same race  
+```{r}
+
+data_draw <- separate(data_draw, col=image1, into=c(NA,"x"), sep="-", remove=F)
+data_draw <- separate(data_draw, col=x, into=c("race1", "sex1"), sep=1, remove=T)
+data_draw <- separate(data_draw, col=image2, into=c(NA,"x"), sep="-", remove=F)
+data_draw <- separate(data_draw, col=x, into=c("race2", "sex2"), sep=1, remove=T)
+data_draw$race_homo <- data_draw$race1==data_draw$race2
+data_draw$sex_homo <- data_draw$sex1==data_draw$sex2
+
+
+accuracy_draw_homo <- ddply(data_draw, .(ID, Structure, Condition, race_homo),
+                       summarise, correct=mean(correct))
+
+
+mylm <- lmerTest::lmer(correct ~ Structure*race_homo + (1|ID),
+                       data=accuracy_draw_homo)
+knitr::kable(anova(mylm))
+mymeans <- emmeans::emmeans(mylm, ~Structure*race_homo)
+knitr::kable(pairs(mymeans))
+
+
+mymeans <- emmeans::emmeans(mylm, ~race_homo)
+knitr::kable(pairs(mymeans))
+```
+
+```{r, echo=F}
+
+summ_accuracy_draw_homo <- summarySEwithin(data = data_draw,
+                                      measurevar = "correct",
+                                      betweenvars = "Condition",
+                                      withinvars = c("Structure", "race_homo"),
+                                      idvar = "ID",
+                                      na.rm = T)
+
+ggplot(summ_accuracy_draw_homo, aes(x=race_homo, y=correct, fill=Structure))+
+  geom_bar(stat="identity", position = "dodge") +
+  scale_fill_manual(limits=structures, values=rev(cols)) +
+  geom_errorbar(aes(ymin=correct-se, ymax=correct+se), width=.1,
+                position = position_dodge(.9))+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black"),
+        plot.title = element_text(hjust = 0.5)) +
+  labs( y="% Accuracy") +
+  ggtitle("Effects of racial homophily accuracy")
+```
+
+
+
+```{r}
+
+accuracy_draw_homo <- ddply(data_draw, .(ID, Structure, Condition, sex_homo),
+                       summarise, correct=mean(correct))
+
+
+mylm <- lmerTest::lmer(correct ~ Structure*sex_homo + (1|ID),
+                       data=accuracy_draw_homo)
+knitr::kable(anova(mylm))
+```
+
+
+Racial homophily affects TP rates in unnatural network
+(potential ceiling effect in natural network)  
+No effect on false positive rates  
+```{r}
+
+data_draw$sub_reported <- as.numeric(as.logical(data_draw$sub_reported))
+report_rates <- ddply(data_draw, 
+                      .(ID, Structure, Section, true_structure, race_homo), 
+                      summarise, 
+                      pos_rate=sum(sub_reported)/length(correct)
+                      )
+report_rates[report_rates$true_structure, "rate"] <- "TruePositive"
+report_rates[!report_rates$true_structure, "rate"] <- "FalsePositive"
+
+mylm <- lmerTest::lmer(pos_rate ~ rate*Structure*race_homo + (1|ID),
+                       data=report_rates)
+knitr::kable(anova(mylm))
+
+
+mymeans <- emmeans::emmeans(mylm, ~race_homo|rate)
+knitr::kable(pairs(mymeans))
+
+mymeans <- emmeans::emmeans(mylm, ~race_homo|rate*Structure)
+knitr::kable(pairs(mymeans))
+
+mymeans <- emmeans::emmeans(mylm, ~Structure|rate*race_homo)
+knitr::kable(pairs(mymeans))
+
+```
+
+
+```{r, echo=F}
+
+summ_report_rates <- summarySEwithin(data = report_rates,
+                      measurevar = "pos_rate",
+                      withinvars = c("Structure", "race_homo", "rate"),
+                      idvar = "ID",
+                      na.rm = T)
+
+
+ggplot(summ_report_rates, aes(x=race_homo, y=pos_rate, fill=Structure))+
+  facet_grid(rate~., scales="free") +
+  geom_bar(stat="identity", position = "dodge") +
+  scale_fill_manual(limits=structures, values=rev(cols)) +
+  geom_errorbar(aes(ymin=pos_rate-se, ymax=pos_rate+se), width=.1,
+                position = position_dodge(.9))+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black"),
+        plot.title = element_text(hjust = 0.5)) +
+  labs( y="% Accuracy") +
+  ggtitle("Effects of racial homophily on report rates")
+
+ggsave(paste0(fig_dir,"race_homophily_effects.png"), width=6.5, height=5, units="in")
+```
+
