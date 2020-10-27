@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en-us">
+    <head>
+        <meta charset="UTF-8">
+        <title>Survey</title>
+        <script src="https://code.jquery.com/jquery-3.2.1.slim.min.js" integrity="sha256-k2WSCIexGzOj3Euiig+TlR8gA0EmPjuc79OEeY5L45g=" crossorigin="anonymous"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.12.3/umd/popper.min.js" integrity="sha384-vFJXuSJphROIrBnz7yo7oB41mKfc8JzQZiCq4NCceLEaO4IHwicKwpJf9c9IpFgh" crossorigin="anonymous"></script>
+        <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0-beta.2/css/bootstrap.min.css" integrity="sha384-PsH8R72JQ3SOdhVi3uxftmaW6Vc51MKb0q5P2rRUpPvrszuE4W1povHYgTpBfshb" crossorigin="anonymous">
+        <script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0-beta.2/js/bootstrap.min.js" integrity="sha384-alpBpkh1PFOepccYVYDB4do5UnbKysX5WZXm3XxPqe5iKTfUKjNkCk9SaVuEZflJ" crossorigin="anonymous"></script>
+    </head>
+
+    <!-- CSS -->
+    <style type="text/css">
+        #info-form {
+            position: absolute;
+            width: 20%;
+            top: 35%;
+            left: 40%;
+        }
+        .submit-btn {
+            display: table;
+            margin: auto;
+        }
+        #section-group .radio {
+            margin-left: 5px;
+        }
+        #instr {
+            margin: auto;
+            width: 270px;
+            margin-top: 30vh;
+        }
+    </style>
+
+    <!-- HTML -->
+    <body>
+        <div id="info">
+            <div id="info-form" class="survey" data-toggle="validator" role="form">
+                <form action="javascript:signin();" class="form-horizontal">
+                    <div id="user-id-group" class="form-group">
+                        <label id="user-id-text" class="control-label" for="user-id">ID</label>
+                        <input id="user-id" type="text" class="form-control input-md" required>
+                    </div>
+                    <button id="submit" type="submit" class="btn btn-primary submit-btn">Submit</button>
+                </form>
+            </div>
+        </div>
+
+        <div id="instr">
+            <p id="instr-text"></p>
+            <button id="start" class="btn btn-primary submit-btn">Start</button>
+        </div>
+
+        <!-- JavaScript -->
+        <script>
+            var instrText = 'You will now complete a few questionnaires. Once you have answered every question on a page, use the \'Next\' button to proceed to the following page. Please answer all questions as truthfully as possible.'
+            var userId;
+            $('#instr').hide();
+            function signin() {
+                $('#user-id').removeClass('is-invalid');
+                userId = $('#user-id').val();
+                if (!userId.startsWith('ucla') || isNaN(userId.substring(4))) {  // error checking
+                    $('#user-id').addClass('is-invalid');
+                    return;
+                }
+                $('#instr-text').text(instrText);
+                $('#info').hide();
+                $('#instr').show();
+            }
+            $('#start').click(function() {
+                window.location.href = 'survey.html?id=' + userId;
+            });
+        </script>
+    </body>
+</html>
